@@ -6,13 +6,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,198 +31,221 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.app.multiplatform.engine.GameConfig
 import com.app.multiplatform.engine.GameState
+import com.app.multiplatform.engine.ObstacleType
 import com.app.multiplatform.viewmodel.GameViewModel
-
-@Composable
-fun App() {
-    MaterialTheme {
-        // Initialize the ViewModel
-        val viewModel: GameViewModel = viewModel()
-        NeonRunnerScreen(viewModel)
-    }
-}
+import kotlin.random.Random
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun NeonRunnerScreen(viewModel: GameViewModel) {
-    // Collect the observable state
+fun App() {
+    val viewModel: GameViewModel = viewModel()
     val gameState by viewModel.gameState.collectAsState()
     val focusRequester = remember { FocusRequester() }
+    val interactionSource = remember { MutableInteractionSource() }
 
-    // Game Loop Driver
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        while (true) {
-            // If game is running, use high-precision Nano timer
-            if (!gameState.isGameOver) {
-                withFrameNanos { time ->
-                    viewModel.onGameTick(time)
-                }
-            } else {
-                // Low power mode when dead
-                withInfiniteAnimationFrameMillis { 
-                     // Just to keep background animating slowly if we wanted
-                }
+    // Desktop Key Handling
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    // Touch/Click Handling for Variable Jump
+    LaunchedEffect(interactionSource) {
+        interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is PressInteraction.Press -> viewModel.onPressJump()
+                is PressInteraction.Release -> viewModel.onReleaseJump()
+                is PressInteraction.Cancel -> viewModel.onReleaseJump()
             }
         }
     }
 
-    // --- UI ROOT ---
+    // Game Loop
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (!gameState.isGameOver) withFrameNanos { viewModel.onGameTick(it) }
+            else withInfiniteAnimationFrameMillis { /* Idle */ }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF121212), Color(0xFF2D2D44))))
+            .background(Color.Black) // Letterbox bars color
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .safeDrawingPadding() // Fixes status bar overlap
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) { viewModel.onJump() }
+                .safeDrawingPadding()
                 .focusRequester(focusRequester)
                 .focusable()
+                .clickable(interactionSource = interactionSource, indication = null) {}
                 .onKeyEvent {
-                    if (it.key == Key.Spacebar || it.key == Key.DirectionUp) {
-                        viewModel.onJump()
-                        true
+                    if (it.type == KeyEventType.KeyDown) {
+                        when (it.key) {
+                            Key.Spacebar, Key.DirectionUp -> { viewModel.onPressJump(); true }
+                            Key.DirectionDown -> { viewModel.onPressDown(); true }
+                            else -> false
+                        }
+                    } else if (it.type == KeyEventType.KeyUp) {
+                        if (it.key == Key.Spacebar || it.key == Key.DirectionUp) {
+                            viewModel.onReleaseJump()
+                            true
+                        } else false
                     } else false
                 }
         ) {
-            val screenW = maxWidth.value * 2.5f
-            val screenH = maxHeight.value * 2.5f
-            val groundY = screenH * GameConfig.GROUND_HEIGHT_RATIO
+            // --- SCALING LOGIC ---
+            // We map World Height (1000) to Screen Height.
+            val scale = maxHeight.value / GameConfig.WORLD_HEIGHT * 2.5f // Density approx
+            val shakeOffset = if (gameState.cameraShake > 0) Random.nextFloat() * 10f * gameState.cameraShake else 0f
 
-            // --- RENDERER ---
             Canvas(modifier = Modifier.fillMaxSize()) {
-                drawBackground(screenW, screenH, groundY, gameState.worldTick)
-                drawPlayer(gameState, groundY)
-                drawObstacles(gameState, groundY)
+                // Apply Camera Shake & Global Scaling
+                withTransform({
+                    translate(left = shakeOffset, top = shakeOffset)
+                    scale(scale, scale, pivot = Offset.Zero)
+                }) {
+                    drawWorld(gameState)
+                }
             }
 
-            // --- HUD ---
+            // HUD (Drawn on top, unscaled or scaled separately)
             GameHUD(gameState)
 
-            // --- OVERLAYS ---
-            if (gameState.isGameOver) {
-                GameOverOverlay()
-            }
+            if (gameState.isGameOver) GameOverOverlay()
         }
     }
 }
 
+// --- RENDERER ---
+fun DrawScope.drawWorld(state: GameState) {
+    // 1. Parallax Backgrounds
+    drawParallaxLayer(state.worldTick, 0.2f, Color(0xFF1A1A2E)) // Distant
+    drawParallaxLayer(state.worldTick, 0.5f, Color(0xFF16213E)) // Mid
+
+    // 2. Ground
+    val groundColor = Color(0xFF0F3460)
+    drawRect(
+        color = groundColor,
+        topLeft = Offset(-100f, GameConfig.GROUND_Y), // Extend left/right for shake
+        size = Size(10000f, 500f) // Infinite floor look
+    )
+    // Neon Line on top of ground
+    drawLine(
+        brush = Brush.horizontalGradient(listOf(Color(0xFFE94560), Color(0xFF533483))),
+        start = Offset(0f, GameConfig.GROUND_Y),
+        end = Offset(5000f, GameConfig.GROUND_Y),
+        strokeWidth = 8f
+    )
+
+    // 3. Orbs (Behind obstacles)
+    state.orbs.forEach { orb ->
+        drawCircle(
+            color = Color(0xFFFFD700),
+            radius = 20f,
+            center = Offset(orb.x, orb.y)
+        )
+        // Glow
+        drawCircle(
+            color = Color(0x55FFD700),
+            radius = 35f,
+            center = Offset(orb.x, orb.y)
+        )
+    }
+
+    // 4. Obstacles
+    state.obstacles.forEach { obs ->
+        val obsY = if (obs.type == ObstacleType.FLOATING) GameConfig.GROUND_Y - obs.height - 150f else GameConfig.GROUND_Y - obs.height
+
+        when (obs.type) {
+            ObstacleType.SPIKE -> {
+                val path = Path().apply {
+                    moveTo(obs.x, GameConfig.GROUND_Y)
+                    lineTo(obs.x + obs.width / 2, GameConfig.GROUND_Y - obs.height)
+                    lineTo(obs.x + obs.width, GameConfig.GROUND_Y)
+                    close()
+                }
+                drawPath(path, Color(0xFFE94560))
+                drawPath(path, Color.White, style = Stroke(width = 3f))
+            }
+            ObstacleType.BLOCK -> {
+                drawRect(Color(0xFF533483), topLeft = Offset(obs.x, GameConfig.GROUND_Y - obs.height), size = Size(obs.width, obs.height))
+                drawRect(Color(0xFFE94560), topLeft = Offset(obs.x, GameConfig.GROUND_Y - obs.height), size = Size(obs.width, obs.height), style = Stroke(3f))
+            }
+            ObstacleType.FLOATING -> {
+                drawRect(Color(0xFF0F3460), topLeft = Offset(obs.x, obsY), size = Size(obs.width, obs.height))
+                drawRect(Color(0xFF00FF00), topLeft = Offset(obs.x, obsY), size = Size(obs.width, obs.height), style = Stroke(3f))
+            }
+        }
+    }
+
+    // 5. Player
+    val playerY = state.playerY - GameConfig.PLAYER_SIZE
+    // Trail Effect (Previous positions could be stored, but we use particles now)
+
+    // Main Body
+    drawRect(
+        color = Color(0xFFE94560),
+        topLeft = Offset(GameConfig.PLAYER_X, playerY),
+        size = Size(GameConfig.PLAYER_SIZE, GameConfig.PLAYER_SIZE)
+    )
+    // Inner Glow
+    drawRect(
+        color = Color.White,
+        topLeft = Offset(GameConfig.PLAYER_X + 10f, playerY + 10f),
+        size = Size(GameConfig.PLAYER_SIZE - 20f, GameConfig.PLAYER_SIZE - 20f),
+        alpha = 0.5f
+    )
+
+    // 6. Particles
+    state.particles.forEach { p ->
+        drawCircle(
+            color = p.color.copy(alpha = p.life),
+            radius = p.size * p.life,
+            center = Offset(p.x, p.y)
+        )
+    }
+}
+
+fun DrawScope.drawParallaxLayer(tick: Long, speed: Float, color: Color) {
+    val scroll = (tick / 1_000_000 * speed * 0.5f) % 1000f
+    for (i in 0..10) {
+        drawRect(
+            color = color,
+            topLeft = Offset((i * 400f) - scroll, 0f),
+            size = Size(150f, GameConfig.GROUND_Y)
+        )
+    }
+}
+
+// Reuse the HUD and Overlay from previous steps (they are perfect)
 @Composable
 fun GameHUD(state: GameState) {
-    Box(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Column(modifier = Modifier.align(Alignment.TopStart)) {
-            Text(
-                text = "SCORE: ${state.score}",
-                color = Color.White,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "SPEED: ${state.currentSpeed.toInt()}",
-                color = Color(0xFF00E5FF),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold
-            )
+    Box(modifier = Modifier.fillMaxSize().padding(32.dp)) {
+        Column {
+            Text("SCORE: ${state.score}", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text("SPEED: ${state.currentSpeed.toInt()}", color = Color(0xFF00E5FF))
         }
     }
 }
 
 @Composable
 fun GameOverOverlay() {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.7f)),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.8f)), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = "GAME OVER",
-                color = Color(0xFFFF0055),
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Black
-            )
-            Text(
-                text = "Tap to Retry",
-                color = Color.White,
-                fontSize = 20.sp,
-                modifier = Modifier.padding(top = 16.dp)
-            )
+            Text("CRASHED", color = Color(0xFFE94560), fontSize = 50.sp, fontWeight = FontWeight.Black)
+            Text("Tap to Retry", color = Color.White, fontSize = 20.sp)
         }
-    }
-}
-
-// --- DRAWING IMPLEMENTATION ---
-
-fun DrawScope.drawBackground(w: Float, h: Float, groundY: Float, tick: Long) {
-    // Neon Ground
-    drawRect(
-        color = Color(0xFF00E5FF),
-        topLeft = Offset(0f, groundY),
-        size = Size(w, 5f)
-    )
-
-    // Retro Grid Effect
-    val scrollOffset = (tick / 1_000_000 / 2) % 400 
-    for (i in 0..25) {
-        val x = -400 + (i * 200) + scrollOffset
-        drawLine(
-            color = Color(0x3300E5FF),
-            start = Offset(x.toFloat(), groundY),
-            end = Offset(x.toFloat() - 300, h),
-            strokeWidth = 2f
-        )
-    }
-}
-
-fun DrawScope.drawPlayer(state: GameState, groundY: Float) {
-    val size = GameConfig.PLAYER_SIZE
-    val x = 150f
-    val y = groundY - size - state.playerY
-
-    // Glow
-    drawCircle(
-        brush = Brush.radialGradient(
-            colors = listOf(Color(0x88FF00AA), Color.Transparent),
-            center = Offset(x + size/2, y + size/2),
-            radius = size * 1.5f
-        ),
-        center = Offset(x + size/2, y + size/2),
-        radius = size * 1.5f
-    )
-
-    // Body
-    drawRect(
-        color = Color(0xFFFF00AA),
-        topLeft = Offset(x, y),
-        size = Size(size, size)
-    )
-}
-
-fun DrawScope.drawObstacles(state: GameState, groundY: Float) {
-    state.obstacles.forEach { obs ->
-        val obsY = groundY - obs.height
-        val path = Path().apply {
-            moveTo(obs.x, groundY)
-            lineTo(obs.x + obs.width / 2, obsY)
-            lineTo(obs.x + obs.width, groundY)
-            close()
-        }
-        drawPath(path = path, color = obs.color, style = Fill)
     }
 }
