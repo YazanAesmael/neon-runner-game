@@ -18,6 +18,8 @@ configure<KotlinMultiplatformExtension> {
             implementation(libs.findLibrary("compose-ui").get())
             implementation(libs.findLibrary("compose-components-resources").get())
             implementation(libs.findLibrary("compose-ui-tooling-preview").get())
+            implementation(libs.findLibrary("androidx-lifecycle-viewmodel").get())
+            implementation(libs.findLibrary("androidx-lifecycle-viewmodel-compose").get())
         }
 
         val androidMain by getting {

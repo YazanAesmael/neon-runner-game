@@ -20,9 +20,9 @@ dependencies {
 
     add("kspCommonMainMetadata", kspDependency)
     add("kspAndroid", kspDependency)
-    add("kspIosArm64", kspDependency)
-    add("kspIosSimulatorArm64", kspDependency)
+//    add("kspIosArm64", kspDependency)
+//    add("kspIosSimulatorArm64", kspDependency)
     add("kspJvm", kspDependency)
-    add("kspJs", kspDependency)
-    add("kspWasmJs", kspDependency)
+//    add("kspJs", kspDependency)
+//    add("kspWasmJs", kspDependency)
 }
